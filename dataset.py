@@ -66,18 +66,23 @@ class Fold:
     fold: int
     train_idx: np.ndarray
     valid_idx: np.ndarray
+    test_idx: np.ndarray
     train: pd.DataFrame
     valid: pd.DataFrame
+    test: pd.DataFrame
     X_train: pd.DataFrame
     y_train: pd.Series
     X_valid: pd.DataFrame
     y_valid: pd.Series
+    X_test: pd.DataFrame
+    y_test: pd.Series
 
 def walk_forward_split(
     data,
     features_final,
     train_size,
     valid_size,
+    test_size,
     step_size=21,
     gap=1
 ) -> Iterator[Fold]:
@@ -85,7 +90,7 @@ def walk_forward_split(
     data = data.copy().sort_values('date').reset_index(drop=True)
 
     n = len(data)
-    min_required = train_size + gap + valid_size
+    min_required = train_size + gap + valid_size + test_size
     if n < min_required:
         raise ValueError(f'Недостаточно строк. Нужно минимум {min_required}')
 
@@ -93,15 +98,20 @@ def walk_forward_split(
     train_start = 0 
     train_end = train_size
 
-    while train_end + gap + valid_size <= n:
+    while train_end + gap + valid_size + gap + test_size <= n:
         valid_start = train_end + gap
         valid_end = valid_start + valid_size
 
+        test_start = valid_end + gap
+        test_end = test_start + test_size
+
         train_idx = np.arange(train_start, train_end)
         valid_idx = np.arange(valid_start, valid_end)
+        test_idx = np.arange(test_start, test_end)
 
-        train = data.iloc[train_idx].copy()
-        valid = data.iloc[valid_idx].copy()
+        train = data.iloc[train_start:train_end].copy()
+        valid = data.iloc[valid_start:valid_end].copy()
+        test = data.iloc[test_start:test_end].copy()
 
         X_train = train[list(features_final)].copy()
         y_train = train['y'].copy()
@@ -109,16 +119,23 @@ def walk_forward_split(
         X_valid = valid[list(features_final)].copy()
         y_valid = valid['y'].copy()
 
+        X_test = test[list(features_final)].copy()
+        y_test = test['y'].copy()
+
         yield Fold(
             fold=fold,
             train_idx=train_idx,
             valid_idx=valid_idx,
+            test_idx=test_idx,
             train=train,
             valid=valid,
+            test=test,
             X_train=X_train,
             y_train=y_train,
             X_valid=X_valid,
-            y_valid=y_valid
+            y_valid=y_valid,
+            X_test=X_test,
+            y_test=y_test
         )
 
         fold += 1
