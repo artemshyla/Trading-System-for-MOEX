@@ -39,6 +39,7 @@ def make_target(data, horizont):
     data = data.sort_values("date").reset_index(drop=True)
     data["fwd_ret"] = np.log(data["close"].shift(-horizont) / data["close"])
     data["y"] = (data["fwd_ret"] > 0).astype(int)
+    # data["y"] = (data["fwd_ret"] > 0.01).astype(int)
     data = data.sort_values("date").reset_index(drop=True)
     
     data = data.dropna().reset_index(drop=True)  
@@ -90,7 +91,7 @@ def walk_forward_split(
     data = data.copy().sort_values('date').reset_index(drop=True)
 
     n = len(data)
-    min_required = train_size + gap + valid_size + test_size
+    min_required = train_size + gap + valid_size + gap + test_size
     if n < min_required:
         raise ValueError(f'Недостаточно строк. Нужно минимум {min_required}')
 

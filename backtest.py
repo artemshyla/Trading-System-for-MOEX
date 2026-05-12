@@ -175,6 +175,17 @@ def _mask_from_rule(values, rule, side_name):
     return mask, labels
 
 
+def _build_trade_schedule(pos, signal_zone, horizon):
+    pos = np.asarray(pos, dtype=np.int8)
+    signal_zone = np.asarray(signal_zone, dtype=object)
+
+    idx = np.arange(0, len(pos), horizon, dtype=int)
+    trade_pos = pos[idx]
+    trade_zone = signal_zone[idx]
+
+    return idx, trade_pos, trade_zone
+
+
 def backtest_probs(proba_long,
                    fwd_ret,
                    date=None,
@@ -182,12 +193,17 @@ def backtest_probs(proba_long,
                    upper=0.55,
                    cost_bps=10,
                    ret_type='log',
-                   periods_per_year=252):
+                   periods_per_year=252,
+                   horizon=1):
     proba_long = np.asarray(proba_long, dtype=float)
     fwd_ret = np.asarray(fwd_ret, dtype=float)
+    horizon = int(horizon)
 
     if len(proba_long) != len(fwd_ret):
         raise ValueError('len(proba_long) must be equal to len(fwd_ret)')
+
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
 
     if date is None:
         date = np.arange(len(proba_long))
@@ -219,13 +235,23 @@ def backtest_probs(proba_long,
     signal_zone[long_mask] = long_labels[long_mask]
     signal_zone[short_mask] = short_labels[short_mask]
 
-    pos_prev = np.r_[0, pos[:-1]]
-    turnover = np.abs(pos - pos_prev).astype(float)
+    trade_idx, trade_pos, trade_signal_zone = _build_trade_schedule(
+        pos=pos,
+        signal_zone=signal_zone,
+        horizon=horizon,
+    )
+    trade_proba_long = proba_long[trade_idx]
+    trade_fwd_ret = fwd_ret[trade_idx]
+    trade_fwd_ret_simple = fwd_ret_simple[trade_idx]
+    trade_date = date[trade_idx]
+
+    # Each active trade opens at t and closes at t + horizon, so round-trip cost is charged once per trade.
+    turnover = (trade_pos != 0).astype(float) * 2.0
 
     cost_rate = cost_bps / 10000.0
     cost = turnover * cost_rate
 
-    gross_ret = pos * fwd_ret_simple
+    gross_ret = trade_pos * trade_fwd_ret_simple
     net_ret = gross_ret - cost
 
     equity = np.cumprod(1.0 + net_ret)
@@ -233,13 +259,14 @@ def backtest_probs(proba_long,
     drawdown = equity / peak - 1.0
 
     bt = pd.DataFrame({
-        'date': date,
-        'proba_long': proba_long,
-        'fwd_ret': fwd_ret,
-        'fwd_ret_simple': fwd_ret_simple,
-        'signal_zone': signal_zone,
-        'pos': pos,
-        'pos_prev': pos_prev,
+        'date': trade_date,
+        'bar_idx': trade_idx,
+        'horizon': horizon,
+        'proba_long': trade_proba_long,
+        'fwd_ret': trade_fwd_ret,
+        'fwd_ret_simple': trade_fwd_ret_simple,
+        'signal_zone': trade_signal_zone,
+        'pos': trade_pos,
         'turnover': turnover,
         'cost': cost,
         'gross_ret': gross_ret,
@@ -255,7 +282,7 @@ def backtest_probs(proba_long,
         pos=bt['pos'].values,
         equity=bt['equity'].values,
         drawdown=bt['drawdown'].values,
-        periods_per_year=periods_per_year
+        periods_per_year=periods_per_year / horizon
     )
 
     yearly = None
@@ -273,7 +300,7 @@ def backtest_probs(proba_long,
                 pos=g['pos'].values,
                 equity=eq,
                 drawdown=dd_y,
-                periods_per_year=periods_per_year
+                periods_per_year=periods_per_year / horizon
             )
             m['year'] = int(year)
             yearly_rows.append(m)
@@ -405,3 +432,58 @@ def confidence_report(df, probs, label="valid", n_bins=10):
         "confidence_table": confidence_table,
         "stats": stats
     }
+
+def optimize_thresholds(proba,
+                        fwd_ret,
+                        date=None,
+                        cost_bps=10,
+                        ret_type='log',
+                        horizon=1,
+                        min_trades=30,
+                        min_gap=0.05,
+                        score_col='sharpe',
+                        lower_grid=None,
+                        upper_grid=None):
+    if lower_grid is None:
+        lower_grid = np.linspace(0.05, 0.49, 45)
+
+    if upper_grid is None:
+        upper_grid = np.linspace(0.51, 0.95, 45)
+
+    best = None
+
+    for lo in lower_grid:
+        for up in upper_grid:
+            if up <= lo + min_gap:
+                continue
+
+            res = backtest_probs(
+                proba_long=proba,
+                fwd_ret=fwd_ret,
+                date=date,
+                lower=lo,
+                upper=up,
+                cost_bps=cost_bps,
+                ret_type=ret_type,
+                horizon=horizon,
+            )
+
+            metrics = res['metrics']
+
+            if metrics['trades'] < min_trades:
+                continue
+
+            score = metrics[score_col]
+
+            if (best is None) or (score > best['score']):
+                best = {
+                    'lower': float(lo),
+                    'upper': float(up),
+                    'score': float(score),
+                    'score_col': score_col,
+                    'metrics': metrics,
+                    'bt': res['bt'],
+                    'yearly': res['yearly']
+                }
+
+    return best

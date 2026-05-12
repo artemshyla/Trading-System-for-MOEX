@@ -6,7 +6,7 @@ import random
 import itertools
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 import numpy as np
@@ -34,6 +34,20 @@ import moexalgo
 from moexalgo import Ticker
 import moexalgo.engines.currency
 from moexalgo import Market
+
+
+DEFAULT_LAG_STEPS = (1, 2, 3, 5)
+DEFAULT_MOM_WINDOWS = (3, 5, 10, 20)
+DEFAULT_VOL_WINDOWS = (5, 10, 20)
+DEFAULT_CONTEXT_TICKERS = (
+    "imoex",
+    "usdrub",
+    "moexog",
+    "rtsi",
+    "moexmm",
+    "moexfn",
+    "rgbitr",
+)
 
 
 def _download_feature(ticker, start_date, end_date, period):
@@ -440,3 +454,65 @@ def _correlation(data, features, threshold, test_size, valid_size):
     auto_drop = [col for col in upper.columns if (upper[col] > threshold).any()]
     features_final = [f for f in features if f not in auto_drop]
     return features_final
+
+
+def preprocessing(
+    ticker,
+    start_date,
+    end_date,
+    period,
+    valid_size,
+    test_size,
+    threshold,
+    lag_steps: Sequence[int] = DEFAULT_LAG_STEPS,
+    mom_windows: Sequence[int] = DEFAULT_MOM_WINDOWS,
+    vol_windows: Sequence[int] = DEFAULT_VOL_WINDOWS,
+    context_tickers: Sequence[str] = DEFAULT_CONTEXT_TICKERS,
+    benchmark: str = "imoex",
+):
+    stock = _stock(ticker=ticker, start_date=start_date, end_date=end_date, period=period)
+
+    concat = _concat(
+        stock,
+        _download_feature("IMOEX", start_date=start_date, end_date=end_date, period=period),
+        _usdrub(start_date=start_date, end_date=end_date, period=period),
+        _download_feature("MOEXOG", start_date=start_date, end_date=end_date, period=period),
+        _download_feature("RTSI", start_date=start_date, end_date=end_date, period=period),
+        _download_feature("MOEXMM", start_date=start_date, end_date=end_date, period=period),
+        _download_feature("MOEXFN", start_date=start_date, end_date=end_date, period=period),
+        _download_feature("RGBITR", start_date=start_date, end_date=end_date, period=period),
+    )
+
+    data = _basic_features(data=concat)
+    data = _context_features(
+        data=data,
+        lag_steps=lag_steps,
+        mom_windows=mom_windows,
+        vol_windows=vol_windows,
+        context_tickers=context_tickers,
+        benchmark=benchmark,
+    )
+    data = _flow_trades(
+        data=data,
+        lag_steps=lag_steps,
+        mom_windows=mom_windows,
+        vol_windows=vol_windows,
+    )
+    data = _regime_features(data=data, benchmark=benchmark)
+
+    features = build_feature_list(
+        context_tickers=context_tickers,
+        lag_steps=lag_steps,
+        mom_windows=mom_windows,
+        vol_windows=vol_windows,
+        benchmark=benchmark,
+    )
+    features_final = _correlation(
+        data=data,
+        features=features,
+        threshold=threshold,
+        test_size=test_size,
+        valid_size=valid_size,
+    )
+
+    return data, features_final
